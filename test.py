@@ -16,12 +16,15 @@ modified_data = data.drop(columns=["lastpage"])
 modified_data.to_csv("/homes/nziegenbein/test_modified.csv", index=False)
 
 # Create a simple Matplotlib plot
-x = range(len(data))
-y = [sum(row) for row in data]  # Example: Sum of each row
+# Generate example data
+x = np.linspace(0, 10, 100)
+y = np.sin(x)
+
+# Create the plot
 plt.plot(x, y)
 plt.xlabel('X-axis')
 plt.ylabel('Y-axis')
-plt.title('CSV Data Plot')
+plt.title('Example Plot')
 
 # Save the Matplotlib figure
 plt.savefig("/homes/nziegenbein/test_plot.png")
