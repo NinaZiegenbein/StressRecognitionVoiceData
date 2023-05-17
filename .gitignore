@@ -6,6 +6,15 @@ __pycache__/
 # C extensions
 *.so
 
+# IDEA files
+.idea/
+
+# CSV files
+*.csv
+
+# PNG files
+*.png
+
 # Distribution / packaging
 .Python
 build/
