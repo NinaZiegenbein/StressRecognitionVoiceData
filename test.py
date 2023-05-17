@@ -2,6 +2,7 @@ import glob
 import csv
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
 # Find the CSV file using glob
 csv_files = glob.glob('/data/dst_tsst_22_bi_multi_nt_lab/raw/dstvtsst_limesurvey_v5_14-03-23.csv')
