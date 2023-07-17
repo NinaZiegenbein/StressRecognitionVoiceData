@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[171]:
+# In[ ]:
 
 
 import os
@@ -26,7 +26,7 @@ import wave
 
 # # Stress Model
 
-# In[172]:
+# In[ ]:
 
 
 class RegressionHead(nn.Module):
@@ -59,7 +59,7 @@ class RegressionHead(nn.Module):
         return x
 
 
-# In[173]:
+# In[ ]:
 
 
 class StressModel(Wav2Vec2PreTrainedModel):
@@ -90,7 +90,7 @@ class StressModel(Wav2Vec2PreTrainedModel):
 
 # ### Load Pre-trained model
 
-# In[174]:
+# In[ ]:
 
 
 # load model from hub
@@ -100,7 +100,7 @@ processor = Wav2Vec2Processor.from_pretrained(model_name)
 model = StressModel.from_pretrained(model_name)
 
 
-# In[175]:
+# In[ ]:
 
 
 # Freeze CNN layers, but not TransformerLayers
@@ -111,7 +111,7 @@ for name, param in model.named_parameters():
         param.requires_grad = False
 
 
-# In[176]:
+# In[ ]:
 
 
 # Create a new optimizer for the trainable layers (only transformer layers)
@@ -126,18 +126,18 @@ criterion = nn.MSELoss()
 
 # ### Load Data
 
-# In[177]:
+# In[ ]:
 
 
 # Set hyperparameters
 window_size = 10  # seconds
 stride = 5  # seconds
-batch_size = 32
+batch_size = 16
 num_epochs = 10
 learning_rate = 1e-4
 
 
-# In[178]:
+# In[ ]:
 
 
 # Define your custom dataset
@@ -183,7 +183,7 @@ class AudioDataset(Dataset):
         return window, target
 
 
-# In[179]:
+# In[ ]:
 
 
 def custom_collate_fn(batch):
@@ -199,7 +199,7 @@ def custom_collate_fn(batch):
     return windows, targets
 
 
-# In[180]:
+# In[ ]:
 
 
 # Load your list of audio file paths
@@ -220,7 +220,7 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, col
 
 # ### Training
 
-# In[181]:
+# In[ ]:
 
 
 # Training loop
