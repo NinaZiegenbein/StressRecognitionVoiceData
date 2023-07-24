@@ -129,13 +129,13 @@ criterion = nn.MSELoss()
 
 # ### Load Data
 
-# In[ ]:
+# In[14]:
 
 
 # Set hyperparameters
-window_size = 4  # seconds
-stride = 2  # seconds
-batch_size = 16
+window_size = 6  # seconds
+stride = 3  # seconds
+batch_size = 32
 num_epochs = 10
 learning_rate = 1e-4
 
@@ -330,6 +330,7 @@ torch.cuda.empty_cache()
 # Run this immediately if memory error above (only on vmc-mbp)
 #gc.collect()
 #torch.cuda.empty_cache()
+# Is this really the solution?
 
 
 # In[ ]:
