@@ -22,6 +22,9 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset
 from moviepy.editor import AudioFileClip
 import wave
+from sklearn.model_selection import StratifiedKFold
+import math
+import gc
 
 
 # # Stress Model
@@ -31,7 +34,7 @@ import wave
 
 class RegressionHead(nn.Module):
     """
-    This class defines the regression head for the emotion model. It consists of a series of linear layers
+    This class defines the regression head for the stress model. It consists of a series of linear layers
     and applies a linear transformation to the input features without any activation function.
     """
     def __init__(self, config):
@@ -41,7 +44,7 @@ class RegressionHead(nn.Module):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.dropout = nn.Dropout(config.final_dropout)
-        self.fc = nn.Linear(config.hidden_size, config.num_labels)
+        self.fc = nn.Linear(config.hidden_size, 1) # we only want a single stress value
 
     def forward(self, features, **kwargs):
         """
@@ -54,7 +57,7 @@ class RegressionHead(nn.Module):
         x = self.dense(x)
         # x = torch.tanh(x) # Don't use actiavtion
         x = self.dropout(x)
-        x = self.out_proj(x)
+        x = self.fc(x)
 
         return x
 
@@ -84,8 +87,8 @@ class StressModel(Wav2Vec2PreTrainedModel):
         outputs = self.wav2vec2(input_values)
         hidden_states = outputs[0]
         hidden_states = torch.mean(hidden_states, dim=1)
-        logits = self.classifier(hidden_states)
-        return hidden_states, logits
+        stress_pred = self.classifier(hidden_states)
+        return hidden_states, stress_pred
 
 
 # ### Load Pre-trained model
@@ -130,11 +133,23 @@ criterion = nn.MSELoss()
 
 
 # Set hyperparameters
-window_size = 10  # seconds
-stride = 5  # seconds
+window_size = 4  # seconds
+stride = 2  # seconds
 batch_size = 16
 num_epochs = 10
 learning_rate = 1e-4
+
+
+# In[ ]:
+
+
+def num_windows(duration):
+    """
+    This helper function return the number of windows of a single file including padding for datapoints that do not perfectly fit into the window at the end
+    @param duration: duration of the audio file
+    @return: number of windows in that file
+    """
+    return math.ceil((duration-window_size)/stride)+1
 
 
 # In[ ]:
@@ -149,7 +164,10 @@ class AudioDataset(Dataset):
         self.targets = targets
 
     def __len__(self):
-        return sum(int(AudioFileClip(audio_file).duration // self.stride)
+        # get duration of ALL FILES divided without rest by stride and summed together
+        # returns the number of windows
+        print("In the len function")
+        return sum(num_windows(AudioFileClip(audio_file).duration)
                    for audio_file in self.audio_files)
 
     def __getitem__(self, idx):
@@ -158,19 +176,30 @@ class AudioDataset(Dataset):
         audio_file_idx = 0
 
         while cumulative_windows <= idx:
-            cumulative_windows += len(self.audio_files[audio_file_idx])
+            cumulative_windows += num_windows(AudioFileClip(self.audio_files[audio_file_idx]).duration)
             audio_file_idx += 1
 
         audio_file_idx -= 1  # since while is false, subtract the last plus
+        print(f"idx: {idx}, cumulative_windows: {cumulative_windows}, audio_file_idx: {audio_file_idx}")
 
         audio_file = self.audio_files[audio_file_idx]
         audio = wave.open(audio_file)
-        audio_duration = len(audio_files)
         frame_rate = audio.getframerate()
 
-        start = (idx - cumulative_windows + len(self.audio_files[audio_file_idx]) * self.stride)
+        # get number of windows in previous files
+        windows_in_prev_files = sum(num_windows(AudioFileClip(audio_file).duration) for audio_file in self.audio_files[0:audio_file_idx])
+        # get number of windows before idx in current file
+        windows_in_file = (idx - windows_in_prev_files)
+        start = windows_in_file * stride # multiply with stride to get starting point in seconds
         audio.setpos(start)
-        window = audio.readframes(int(self.window_size * frame_rate))
+        # check if window is bigger than amount of audio file "left"
+        if start + int(self.window_size * frame_rate) <= audio.getnframes():
+            window = audio.readframes(int(self.window_size * frame_rate))
+        else:
+            # pad the audio file with zeros
+            num_frames_left = audio.getnframes() - start
+            zero_padding = b'\x00' * (int(self.window_size * frame_rate) - num_frames_left)
+            window = audio.readframes(num_frames_left) + zero_padding
         audio.close()
 
         # Convert the raw audio frames to a numeric representation
@@ -194,7 +223,7 @@ def custom_collate_fn(batch):
     windows = torch.stack(windows)
 
     # Convert targets to tensors
-    targets = torch.tensor(targets)
+    targets = torch.tensor(targets, dtype=torch.float32)
 
     return windows, targets
 
@@ -213,12 +242,8 @@ train_files, test_files = train_test_split(audio_files, test_size=0.2, random_st
 train_dataset = AudioDataset(list(train_files), window_size, stride, data["stress_delta"])
 test_dataset = AudioDataset(list(test_files), window_size, stride, data["stress_delta"])
 
-# Create train and test data loaders
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)#
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn) # collate_fn=custom_collate_fn
 
-
-# ### Training
+# ### Training - basic without n-fold cross validation
 
 # In[ ]:
 
@@ -232,6 +257,10 @@ for epoch in range(num_epochs):
     model.train()
     train_loss = 0.0
 
+    # DataLoader uses len function to get indices of sliding windows and then calls them (get_item)
+    # shuffle=False, as data points depend on each other
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn)
+
     # Iterate over training batches
     for batch, target in train_loader:
         batch = batch.to(device)
@@ -240,10 +269,12 @@ for epoch in range(num_epochs):
 
         # Forward pass
         #outputs = model(batch)
-        outputs = model(batch.to(device))
+        hidden_states, stress_pred = model(batch.to(device))
+        print("stress_pred size: ", stress_pred.size())
+        print("target size: ", target.size())
 
         # Compute loss
-        loss = criterion(outputs, target)  # Adjust targets according to your data
+        loss = criterion(stress_pred, target)
         train_loss += loss.item() * batch.size(0)
 
         # Backward pass and optimization
@@ -258,16 +289,18 @@ for epoch in range(num_epochs):
     model.eval()
     test_loss = 0.0
 
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn)
+
     with torch.no_grad():
         for batch, target in test_loader:
             batch = batch.to(device)
             target = target.to(device)
 
             # Forward pass
-            outputs = model(batch)
+            hidden_states, stress_pred = model(batch)
 
             # Compute loss
-            loss = criterion(outputs, target)  # Adjust targets according to your data
+            loss = criterion(stress_pred, target)
             test_loss += loss.item() * batch.size(0)
 
     # Compute average test loss for the epoch
@@ -288,6 +321,15 @@ plt.show()
 
 # Save trained model
 torch.save(model.state_dict(), '/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/trained_model.pt')
+torch.cuda.empty_cache()
+
+
+# In[ ]:
+
+
+# Run this immediately if memory error above (only on vmc-mbp)
+#gc.collect()
+#torch.cuda.empty_cache()
 
 
 # In[ ]:
@@ -319,10 +361,106 @@ def process_func(
     return y
 
 
+# #### Training advanced  - with n-fold cross validation
+
 # In[ ]:
 
 
+# Training loop
+train_losses = []
+test_losses = []
+best_test_loss = float('inf')
+best_model = None
 
+# Create the cross-validation splits
+skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
+
+# Iterate over the folds
+for fold, (train_index, test_index) in enumerate(skf.split(train_dataset.audio_files, train_dataset.targets)):
+    # Create the train and test datasets for the current fold
+    train_fold_dataset = torch.utils.data.Subset(train_dataset, train_index)
+    test_fold_dataset = torch.utils.data.Subset(train_dataset, test_index)
+
+    # Create the train and test data loaders
+    train_loader = DataLoader(train_fold_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn)
+    test_loader = DataLoader(test_fold_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn)
+
+    # Initialize the model for each fold
+    model = StressModel.from_pretrained(model_name)
+    model = model.to(device)
+
+    # Initialize the optimizer and criterion
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    criterion = nn.MSELoss()
+
+    for epoch in range(num_epochs):
+        model.train()
+        train_loss = 0.0
+
+        # Iterate over training batches
+        for batch, target in train_loader:
+            batch = batch.to(device)
+            target = target.to(device)
+            optimizer.zero_grad()
+
+            # Forward pass
+            #outputs = model(batch)
+            outputs = model(batch.to(device))
+
+            # Compute loss
+            loss = criterion(outputs, target)
+            train_loss += loss.item() * batch.size(0)
+
+            # Backward pass and optimization
+            loss.backward()
+            optimizer.step()
+
+        # Compute average train loss for the epoch
+        train_loss /= len(train_loader.dataset)
+        train_losses.append(train_loss)
+
+        # Evaluation on test set
+        model.eval()
+        test_loss = 0.0
+
+        with torch.no_grad():
+            for batch, target in test_loader:
+                batch = batch.to(device)
+                target = target.to(device)
+
+                # Forward pass
+                outputs = model(batch)
+
+                # Compute loss
+                loss = criterion(outputs, target)  # Adjust targets according to your data
+                test_loss += loss.item() * batch.size(0)
+
+        # Compute average test loss for the epoch
+        test_loss /= len(test_loader.dataset)
+        test_losses.append(test_loss)
+
+         # Save the best model based on test loss
+        if test_loss < best_test_loss:
+            best_test_loss = test_loss
+            best_model = model.state_dict()
+
+        # Print progress
+        print(f"Epoch {epoch+1}/{num_epochs}: Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
+
+    # Plot loss over epochs
+    plt.plot(range(1, num_epochs+1), train_losses, label='Train Loss')
+    plt.plot(range(1, num_epochs+1), test_losses, label='Test Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title("Fold" + str(fold))
+    plt.legend()
+    plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot_fold_' + str(fold) + '.png')
+    plt.show()
+
+#TODO: Evaluate on the test data set (rename above test to validation data set)
+
+# Save trained model
+torch.save(best_model, '/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/trained_model_cv.pt')
 
 
 # In[ ]:
