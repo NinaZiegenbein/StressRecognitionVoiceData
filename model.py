@@ -129,13 +129,13 @@ criterion = nn.MSELoss()
 
 # ### Load Data
 
-# In[14]:
+# In[ ]:
 
 
 # Set hyperparameters
 window_size = 6  # seconds
 stride = 3  # seconds
-batch_size = 32
+batch_size = 16
 num_epochs = 10
 learning_rate = 1e-4
 
