@@ -119,10 +119,12 @@ for name, param in model.named_parameters():
 
 # additional loss infos/functions
 def calculate_mae(predictions, targets):
-    return nn.L1Loss(predictions, targets).item() * batch.size(0)
+    loss_func = nn.L1Loss()
+    return loss_func(predictions, targets).item() * batch.size(0)
 
 def calculate_rmse(predictions, targets):
-    mse = nn.MSELoss(predictions, targets).item() * batch_size(0)
+    loss_func = nn.MSELoss()
+    mse = loss_func(predictions, targets).item() * batch_size(0)
     return torch.sqrt(mse)
 
 def calculate_ccc(predictions, targets):
