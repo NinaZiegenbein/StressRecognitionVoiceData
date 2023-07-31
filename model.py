@@ -117,6 +117,25 @@ for name, param in model.named_parameters():
 # In[ ]:
 
 
+# additional loss infos/functions
+def calculate_mae(predictions, targets):
+    loss_func = nn.L1Loss()
+    return loss_func(predictions, targets).item() * batch.size(0)
+
+def calculate_rmse(predictions, targets):
+    loss_func = nn.MSELoss()
+    mse = loss_func(predictions, targets)
+    return torch.sqrt(mse).item() * batch_size
+
+def calculate_ccc(predictions, targets):
+    cov_pred_target = torch.mean((predictions - predictions.mean()) * (targets - targets.mean()))
+    ccc = 2 * cov_pred_target / (torch.var(predictions) + torch.var(targets) + (predictions.mean() - targets.mean())**2)
+    return ccc.item() * batch.size(0)
+
+
+# In[ ]:
+
+
 # Create a new optimizer for the trainable layers (only transformer layers)
 optimizer = torch.optim.Adam(
     filter(lambda p: p.requires_grad, model.parameters()),
@@ -138,6 +157,7 @@ stride = 3  # seconds
 batch_size = 16
 num_epochs = 10
 learning_rate = 1e-4
+n_folds = 3
 
 
 # In[ ]:
@@ -166,7 +186,6 @@ class AudioDataset(Dataset):
     def __len__(self):
         # get duration of ALL FILES divided without rest by stride and summed together
         # returns the number of windows
-        print("In the len function")
         return sum(num_windows(AudioFileClip(audio_file).duration)
                    for audio_file in self.audio_files)
 
@@ -180,7 +199,6 @@ class AudioDataset(Dataset):
             audio_file_idx += 1
 
         audio_file_idx -= 1  # since while is false, subtract the last plus
-        print(f"idx: {idx}, cumulative_windows: {cumulative_windows}, audio_file_idx: {audio_file_idx}")
 
         audio_file = self.audio_files[audio_file_idx]
         audio = wave.open(audio_file)
@@ -236,17 +254,27 @@ data = pd.read_csv("/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/tsst
 audio_files = data["TSST_audio_segment"]
 
 # Perform train-test split
-train_files, test_files = train_test_split(audio_files, test_size=0.2, random_state=42)
+train_files, test_files, train_targets, test_targets = train_test_split(audio_files, data["stress_delta"], test_size=0.2, random_state=42)
+
+train_targets = train_targets.reset_index(drop=True)
+test_targets = test_targets.reset_index(drop=True)
 
 # Create train and test datasets
-train_dataset = AudioDataset(list(train_files), window_size, stride, data["stress_delta"])
-test_dataset = AudioDataset(list(test_files), window_size, stride, data["stress_delta"])
+train_dataset = AudioDataset(list(train_files), window_size, stride, train_targets)
+test_dataset = AudioDataset(list(test_files), window_size, stride, test_targets)
 
 
 # ### Training - basic without n-fold cross validation
 
 # In[ ]:
 
+
+print("Training with", len(audio_files), "files")
+print("window_size:", window_size, "; stride:", stride)
+print("batch_size:", batch_size, "; learning_rate:", learning_rate)
+#print(n_folds, "-fold cross validation")
+
+print("Using MSE Loss, shuffle=true, normal learning rate")
 
 # Training loop
 train_losses = []
@@ -256,10 +284,12 @@ for epoch in range(num_epochs):
     model = model.to(device)
     model.train()
     train_loss = 0.0
+    train_mae = 0.0
+    train_rmse = 0.0
 
     # DataLoader uses len function to get indices of sliding windows and then calls them (get_item)
     # shuffle=False, as data points depend on each other
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
 
     # Iterate over training batches
     for batch, target in train_loader:
@@ -270,12 +300,13 @@ for epoch in range(num_epochs):
         # Forward pass
         #outputs = model(batch)
         hidden_states, stress_pred = model(batch.to(device))
-        print("stress_pred size: ", stress_pred.size())
-        print("target size: ", target.size())
 
         # Compute loss
         loss = criterion(stress_pred, target)
         train_loss += loss.item() * batch.size(0)
+
+        train_mae += calculate_mae(stress_pred, target)
+        train_rmse += calculate_rmse(stress_pred, target)
 
         # Backward pass and optimization
         loss.backward()
@@ -285,11 +316,16 @@ for epoch in range(num_epochs):
     train_loss /= len(train_loader.dataset)
     train_losses.append(train_loss)
 
+    train_mae /= len(train_loader.dataset)
+    train_rmse /= len(train_loader.dataset)
+
     # Evaluation on test set
     model.eval()
     test_loss = 0.0
+    test_mae = 0.0
+    test_rmse = 0.0
 
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
 
     with torch.no_grad():
         for batch, target in test_loader:
@@ -303,12 +339,19 @@ for epoch in range(num_epochs):
             loss = criterion(stress_pred, target)
             test_loss += loss.item() * batch.size(0)
 
+            test_mae += calculate_mae(stress_pred, target)
+            test_rmse += calculate_rmse(stress_pred, target)
+
     # Compute average test loss for the epoch
     test_loss /= len(test_loader.dataset)
     test_losses.append(test_loss)
 
+    test_mae /= len(train_loader.dataset)
+    test_rmse /= len(train_loader.dataset)
+
     # Print progress
     print(f"Epoch {epoch+1}/{num_epochs}: Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
+    print(f"Train MAE: {train_mae:.4f}, Train RMSE: {train_rmse:.4f}, Test MAE: {test_mae:.4f}, Test RMSE: {test_rmse:.4f}")
 
 # Plot loss over epochs
 plt.plot(range(1, num_epochs+1), train_losses, label='Train Loss')
@@ -327,10 +370,15 @@ torch.cuda.empty_cache()
 # In[ ]:
 
 
+
+
+
+# In[ ]:
+
+
 # Run this immediately if memory error above (only on vmc-mbp)
-#gc.collect()
-#torch.cuda.empty_cache()
-# Is this really the solution?
+gc.collect()
+torch.cuda.empty_cache()
 
 
 # In[ ]:
@@ -377,14 +425,14 @@ best_model = None
 skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
 
 # Iterate over the folds
-for fold, (train_index, test_index) in enumerate(skf.split(train_dataset.audio_files, train_dataset.targets)):
+for fold, (train_index, valid_index) in enumerate(skf.split(train_dataset.audio_files, train_dataset.targets)):
     # Create the train and test datasets for the current fold
     train_fold_dataset = torch.utils.data.Subset(train_dataset, train_index)
-    test_fold_dataset = torch.utils.data.Subset(train_dataset, test_index)
+    valid_fold_dataset = torch.utils.data.Subset(train_dataset, valid_index)
 
     # Create the train and test data loaders
-    train_loader = DataLoader(train_fold_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn)
-    test_loader = DataLoader(test_fold_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn)
+    train_loader = DataLoader(train_fold_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
+    valid_loader = DataLoader(valid_fold_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
 
     # Initialize the model for each fold
     model = StressModel.from_pretrained(model_name)
@@ -394,6 +442,7 @@ for fold, (train_index, test_index) in enumerate(skf.split(train_dataset.audio_f
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.MSELoss()
 
+    # Iterate over epochs
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0.0
@@ -420,9 +469,29 @@ for fold, (train_index, test_index) in enumerate(skf.split(train_dataset.audio_f
         train_loss /= len(train_loader.dataset)
         train_losses.append(train_loss)
 
-        # Evaluation on test set
+        # Evaluation on validation set
         model.eval()
-        test_loss = 0.0
+        valid_loss = 0.0
+
+        with torch.no_grad():
+            for batch, target in valid_loader:
+                batch = batch.to(device)
+                target = target.to(device)
+
+                # Forward pass
+                outputs = model(batch)
+
+                # Compute loss
+                loss = criterion(outputs, target)  # Adjust targets according to your data
+                valid_loss += loss.item() * batch.size(0)
+
+        # Compute average validation loss for the epoch
+        valid_loss /= len(valid_loader.dataset)
+        valid_loss.append(valid_loss)
+
+        """
+        # Evaluation on test set
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
 
         with torch.no_grad():
             for batch, target in test_loader:
@@ -433,35 +502,43 @@ for fold, (train_index, test_index) in enumerate(skf.split(train_dataset.audio_f
                 outputs = model(batch)
 
                 # Compute loss
-                loss = criterion(outputs, target)  # Adjust targets according to your data
+                loss = criterion(outputs, target)
                 test_loss += loss.item() * batch.size(0)
 
-        # Compute average test loss for the epoch
+        # Compute average test loss for the entire test dataset
         test_loss /= len(test_loader.dataset)
-        test_losses.append(test_loss)
 
          # Save the best model based on test loss
         if test_loss < best_test_loss:
             best_test_loss = test_loss
             best_model = model.state_dict()
+        """
 
         # Print progress
-        print(f"Epoch {epoch+1}/{num_epochs}: Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
+        print(f"Fold {fold+1}/{n_folds}, Epoch {epoch+1}/{num_epochs}: Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
 
     # Plot loss over epochs
     plt.plot(range(1, num_epochs+1), train_losses, label='Train Loss')
     plt.plot(range(1, num_epochs+1), test_losses, label='Test Loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title("Fold" + str(fold))
+    plt.title("Fold" + str(fold+1))
     plt.legend()
     plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot_fold_' + str(fold) + '.png')
     plt.show()
 
-#TODO: Evaluate on the test data set (rename above test to validation data set)
+#TODO: Test data or leave out completely?
 
 # Save trained model
 torch.save(best_model, '/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/trained_model_cv.pt')
+
+
+# In[ ]:
+
+
+# Run this immediately if memory error above (only on vmc-mbp)
+gc.collect()
+torch.cuda.empty_cache()
 
 
 # In[ ]:
