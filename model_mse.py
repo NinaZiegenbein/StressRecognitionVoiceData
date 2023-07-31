@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[90]:
+# In[ ]:
 
 
 import os
@@ -29,7 +29,7 @@ import gc
 
 # # Stress Model
 
-# In[91]:
+# In[ ]:
 
 
 class RegressionHead(nn.Module):
@@ -62,7 +62,7 @@ class RegressionHead(nn.Module):
         return x
 
 
-# In[92]:
+# In[ ]:
 
 
 class StressModel(Wav2Vec2PreTrainedModel):
@@ -93,7 +93,7 @@ class StressModel(Wav2Vec2PreTrainedModel):
 
 # ### Load Pre-trained model
 
-# In[93]:
+# In[ ]:
 
 
 # load model from hub
@@ -103,7 +103,7 @@ processor = Wav2Vec2Processor.from_pretrained(model_name)
 model = StressModel.from_pretrained(model_name)
 
 
-# In[94]:
+# In[ ]:
 
 
 # Freeze CNN layers, but not TransformerLayers
@@ -114,7 +114,7 @@ for name, param in model.named_parameters():
         param.requires_grad = False
 
 
-# In[106]:
+# In[ ]:
 
 
 # additional loss infos/functions
@@ -131,7 +131,7 @@ def calculate_ccc(predictions, targets):
     return ccc.item() * batch.size(0)
 
 
-# In[96]:
+# In[ ]:
 
 
 # Create a new optimizer for the trainable layers (only transformer layers)
@@ -146,7 +146,7 @@ criterion = nn.MSELoss()
 
 # ### Load Data
 
-# In[97]:
+# In[ ]:
 
 
 # Set hyperparameters
@@ -158,7 +158,7 @@ learning_rate = 1e-4
 n_folds = 3
 
 
-# In[98]:
+# In[ ]:
 
 
 def num_windows(duration):
@@ -170,7 +170,7 @@ def num_windows(duration):
     return math.ceil((duration-window_size)/stride)+1
 
 
-# In[99]:
+# In[ ]:
 
 
 # Define your custom dataset
@@ -228,7 +228,7 @@ class AudioDataset(Dataset):
         return window, target
 
 
-# In[100]:
+# In[ ]:
 
 
 def custom_collate_fn(batch):
@@ -244,7 +244,7 @@ def custom_collate_fn(batch):
     return windows, targets
 
 
-# In[101]:
+# In[ ]:
 
 
 # Load your list of audio file paths
@@ -264,7 +264,7 @@ test_dataset = AudioDataset(list(test_files), window_size, stride, test_targets)
 
 # ### Training - basic without n-fold cross validation
 
-# In[107]:
+# In[ ]:
 
 
 print("Training with", len(audio_files), "files")
@@ -357,10 +357,10 @@ plt.plot(range(1, num_epochs+1), test_losses, label='Test Loss')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.legend()
-plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot.png')
+plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot_mse.png')
 plt.show()
 
 # Save trained model
-torch.save(model.state_dict(), '/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/trained_model.pt')
+torch.save(model.state_dict(), '/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/model_mse.pt')
 torch.cuda.empty_cache()
 
