@@ -124,8 +124,8 @@ def calculate_mae(predictions, targets):
 
 def calculate_rmse(predictions, targets):
     loss_func = nn.MSELoss()
-    mse = loss_func(predictions, targets).item() * batch_size(0)
-    return torch.sqrt(mse)
+    mse = loss_func(predictions, targets)
+    return torch.sqrt(mse).item() * batch_size(0)
 
 def calculate_ccc(predictions, targets):
     cov_pred_target = torch.mean((predictions - predictions.mean()) * (targets - targets.mean()))
