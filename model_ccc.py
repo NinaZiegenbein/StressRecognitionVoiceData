@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
+# In[1]:
 
 
 import os
@@ -29,7 +29,7 @@ import gc
 
 # # Stress Model
 
-# In[ ]:
+# In[2]:
 
 
 class RegressionHead(nn.Module):
@@ -62,7 +62,7 @@ class RegressionHead(nn.Module):
         return x
 
 
-# In[ ]:
+# In[3]:
 
 
 class StressModel(Wav2Vec2PreTrainedModel):
@@ -93,7 +93,7 @@ class StressModel(Wav2Vec2PreTrainedModel):
 
 # ### Load Pre-trained model
 
-# In[ ]:
+# In[4]:
 
 
 # load model from hub
@@ -103,7 +103,7 @@ processor = Wav2Vec2Processor.from_pretrained(model_name)
 model = StressModel.from_pretrained(model_name)
 
 
-# In[ ]:
+# In[5]:
 
 
 # Freeze CNN layers, but not TransformerLayers
@@ -114,28 +114,29 @@ for name, param in model.named_parameters():
         param.requires_grad = False
 
 
-# In[ ]:
+# In[14]:
 
 
 # additional loss infos/functions
 def calculate_mae(predictions, targets):
     loss_func = nn.L1Loss()
+    print("I am calculated")
     return loss_func(predictions, targets).item() * batch.size(0)
 
 def calculate_rmse(predictions, targets):
     loss_func = nn.MSELoss()
     mse = loss_func(predictions, targets)
     mse = torch.sqrt(mse)
-    batch_size_var = batch_size(0)
+    batch_size_var = batch_size
     return mse.item() * batch_size_var
 
 def calculate_ccc(predictions, targets):
     cov_pred_target = torch.mean((predictions - predictions.mean()) * (targets - targets.mean()))
     ccc = 2 * cov_pred_target / (torch.var(predictions) + torch.var(targets) + (predictions.mean() - targets.mean())**2)
-    return ccc.item() * batch.size(0)
+    return ccc
 
 
-# In[ ]:
+# In[15]:
 
 
 # Create a new optimizer for the trainable layers (only transformer layers)
@@ -150,7 +151,7 @@ optimizer = torch.optim.Adam(
 
 # ### Load Data
 
-# In[ ]:
+# In[16]:
 
 
 # Set hyperparameters
@@ -162,7 +163,7 @@ learning_rate = 1e-4
 n_folds = 3
 
 
-# In[ ]:
+# In[17]:
 
 
 def num_windows(duration):
@@ -174,7 +175,7 @@ def num_windows(duration):
     return math.ceil((duration-window_size)/stride)+1
 
 
-# In[ ]:
+# In[18]:
 
 
 # Define your custom dataset
@@ -232,7 +233,7 @@ class AudioDataset(Dataset):
         return window, target
 
 
-# In[ ]:
+# In[19]:
 
 
 def custom_collate_fn(batch):
@@ -248,7 +249,7 @@ def custom_collate_fn(batch):
     return windows, targets
 
 
-# In[ ]:
+# In[20]:
 
 
 # Load your list of audio file paths
@@ -268,7 +269,7 @@ test_dataset = AudioDataset(list(test_files), window_size, stride, test_targets)
 
 # ### Training - basic without n-fold cross validation
 
-# In[ ]:
+# In[21]:
 
 
 print("Training with", len(audio_files), "files")
@@ -305,7 +306,7 @@ for epoch in range(num_epochs):
         # Compute loss
         #loss = criterion(stress_pred, target)
         loss = calculate_ccc(stress_pred, target)
-        train_loss += loss * batch.size(0)
+        train_loss += loss.item() * batch.size(0)
 
         train_mae += calculate_mae(stress_pred, target)
         train_rmse += calculate_rmse(stress_pred, target)
