@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[ ]:
 
 
 import os
@@ -29,7 +29,7 @@ import gc
 
 # # Stress Model
 
-# In[2]:
+# In[ ]:
 
 
 class RegressionHead(nn.Module):
@@ -62,7 +62,7 @@ class RegressionHead(nn.Module):
         return x
 
 
-# In[3]:
+# In[ ]:
 
 
 class StressModel(Wav2Vec2PreTrainedModel):
@@ -93,7 +93,7 @@ class StressModel(Wav2Vec2PreTrainedModel):
 
 # ### Load Pre-trained model
 
-# In[4]:
+# In[ ]:
 
 
 # load model from hub
@@ -103,7 +103,7 @@ processor = Wav2Vec2Processor.from_pretrained(model_name)
 model = StressModel.from_pretrained(model_name)
 
 
-# In[5]:
+# In[ ]:
 
 
 # Freeze CNN layers, but not TransformerLayers
@@ -114,7 +114,7 @@ for name, param in model.named_parameters():
         param.requires_grad = False
 
 
-# In[14]:
+# In[ ]:
 
 
 # additional loss infos/functions
@@ -131,12 +131,13 @@ def calculate_rmse(predictions, targets):
     return mse.item() * batch_size_var
 
 def calculate_ccc(predictions, targets):
-    cov_pred_target = torch.mean((predictions - predictions.mean()) * (targets - targets.mean()))
-    ccc = 2 * cov_pred_target / (torch.var(predictions) + torch.var(targets) + (predictions.mean() - targets.mean())**2)
-    return ccc
+    cov_pred_target = torch.mean((predictions - torch.mean(predictions)) * (targets - torch.mean(targets)))
+    ccc = 2 * cov_pred_target / (torch.var(predictions) + torch.var(targets) + (torch.mean(predictions) - torch.mean(targets))**2 + torch.finfo(torch.float32).eps) # add epsilon to avoid divisions by zero
+    # subtract from 1, as ccc is 1 for perfect agreement, and we want to minimize
+    return 1. - ccc
 
 
-# In[15]:
+# In[ ]:
 
 
 # Create a new optimizer for the trainable layers (only transformer layers)
@@ -151,7 +152,7 @@ optimizer = torch.optim.Adam(
 
 # ### Load Data
 
-# In[16]:
+# In[ ]:
 
 
 # Set hyperparameters
@@ -163,7 +164,7 @@ learning_rate = 1e-4
 n_folds = 3
 
 
-# In[17]:
+# In[ ]:
 
 
 def num_windows(duration):
@@ -175,7 +176,7 @@ def num_windows(duration):
     return math.ceil((duration-window_size)/stride)+1
 
 
-# In[18]:
+# In[ ]:
 
 
 # Define your custom dataset
@@ -233,7 +234,7 @@ class AudioDataset(Dataset):
         return window, target
 
 
-# In[19]:
+# In[ ]:
 
 
 def custom_collate_fn(batch):
@@ -249,7 +250,7 @@ def custom_collate_fn(batch):
     return windows, targets
 
 
-# In[20]:
+# In[ ]:
 
 
 # Load your list of audio file paths
@@ -269,7 +270,7 @@ test_dataset = AudioDataset(list(test_files), window_size, stride, test_targets)
 
 # ### Training - basic without n-fold cross validation
 
-# In[21]:
+# In[ ]:
 
 
 print("Training with", len(audio_files), "files")
@@ -353,8 +354,8 @@ for epoch in range(num_epochs):
     test_loss /= len(test_loader.dataset)
     test_losses.append(test_loss)
 
-    test_mae /= len(train_loader.dataset)
-    test_rmse /= len(train_loader.dataset)
+    test_mae /= len(test_loader.dataset)
+    test_rmse /= len(test_loader.dataset)
 
     # Print progress
     print(f"Epoch {epoch+1}/{num_epochs}: Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
