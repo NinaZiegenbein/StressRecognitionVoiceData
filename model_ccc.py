@@ -328,6 +328,7 @@ for epoch in range(num_epochs):
     test_loss = 0.0
     test_mae = 0.0
     test_rmse = 0.0
+    mean_target = 0.0
 
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
 
@@ -349,6 +350,7 @@ for epoch in range(num_epochs):
 
             test_mae += calculate_mae(stress_pred, target)
             test_rmse += calculate_rmse(stress_pred, target)
+            mean_target += torch.sum(target).item()
 
     # Compute average test loss for the epoch
     test_loss /= len(test_loader.dataset)
@@ -356,6 +358,7 @@ for epoch in range(num_epochs):
 
     test_mae /= len(test_loader.dataset)
     test_rmse /= len(test_loader.dataset)
+    mean_target /= len(test_loader.dataset)
 
     # Print progress
     print(f"Epoch {epoch+1}/{num_epochs}: Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
@@ -364,6 +367,7 @@ for epoch in range(num_epochs):
 # Plot loss over epochs
 plt.plot(range(1, num_epochs+1), train_losses, label='Train Loss')
 plt.plot(range(1, num_epochs+1), test_losses, label='Test Loss')
+plt.axhline(mean_target, label='Mean Test Prediction')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.legend()
