@@ -156,7 +156,7 @@ window_size = 6  # seconds
 stride = 3  # seconds
 batch_size = 16
 num_epochs = 10
-learning_rate = 1e-4
+learning_rate = 1e-5
 n_folds = 3
 
 
@@ -346,8 +346,8 @@ for epoch in range(num_epochs):
     test_loss /= len(test_loader.dataset)
     test_losses.append(test_loss)
 
-    test_mae /= len(train_loader.dataset)
-    test_rmse /= len(train_loader.dataset)
+    test_mae /= len(test_loader.dataset)
+    test_rmse /= len(test_loader.dataset)
 
     # Print progress
     print(f"Epoch {epoch+1}/{num_epochs}: Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
@@ -359,10 +359,10 @@ plt.plot(range(1, num_epochs+1), test_losses, label='Test Loss')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.legend()
-plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot_mse.png')
+plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot_mse_lowlr.png')
 plt.show()
 
 # Save trained model
-torch.save(model.state_dict(), '/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/model_mse.pt')
+torch.save(model.state_dict(), '/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/model_mse_lowlr.pt')
 torch.cuda.empty_cache()
 
