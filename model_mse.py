@@ -157,7 +157,7 @@ window_size = 6  # seconds
 stride = 3  # seconds
 batch_size = 16
 num_epochs = 10
-learning_rate = 1e-5
+learning_rate = 1e-3
 n_folds = 3
 
 
