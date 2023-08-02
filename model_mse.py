@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
+# In[18]:
 
 
 import os
@@ -29,7 +29,7 @@ import gc
 
 # # Stress Model
 
-# In[ ]:
+# In[19]:
 
 
 class RegressionHead(nn.Module):
@@ -62,7 +62,7 @@ class RegressionHead(nn.Module):
         return x
 
 
-# In[ ]:
+# In[21]:
 
 
 class StressModel(Wav2Vec2PreTrainedModel):
@@ -93,7 +93,7 @@ class StressModel(Wav2Vec2PreTrainedModel):
 
 # ### Load Pre-trained model
 
-# In[ ]:
+# In[22]:
 
 
 # load model from hub
@@ -103,7 +103,7 @@ processor = Wav2Vec2Processor.from_pretrained(model_name)
 model = StressModel.from_pretrained(model_name)
 
 
-# In[ ]:
+# In[23]:
 
 
 # Freeze CNN layers, but not TransformerLayers
@@ -114,7 +114,7 @@ for name, param in model.named_parameters():
         param.requires_grad = False
 
 
-# In[ ]:
+# In[24]:
 
 
 # additional loss infos/functions
@@ -134,7 +134,7 @@ def calculate_ccc(predictions, targets):
     return 1. - ccc
 
 
-# In[ ]:
+# In[25]:
 
 
 # Create a new optimizer for the trainable layers (only transformer layers)
@@ -149,7 +149,7 @@ criterion = nn.MSELoss()
 
 # ### Load Data
 
-# In[ ]:
+# In[26]:
 
 
 # Set hyperparameters
@@ -157,11 +157,11 @@ window_size = 6  # seconds
 stride = 3  # seconds
 batch_size = 16
 num_epochs = 10
-learning_rate = 1e-3
+learning_rate = 1e-4
 n_folds = 3
 
 
-# In[ ]:
+# In[27]:
 
 
 def num_windows(duration):
@@ -173,7 +173,7 @@ def num_windows(duration):
     return math.ceil((duration-window_size)/stride)+1
 
 
-# In[ ]:
+# In[28]:
 
 
 # Define your custom dataset
@@ -231,7 +231,7 @@ class AudioDataset(Dataset):
         return window, target
 
 
-# In[ ]:
+# In[29]:
 
 
 def custom_collate_fn(batch):
@@ -247,15 +247,18 @@ def custom_collate_fn(batch):
     return windows, targets
 
 
-# In[ ]:
+# In[30]:
 
 
 # Load your list of audio file paths
 data = pd.read_csv("/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/tsst_data.csv")
 audio_files = data["TSST_audio_segment"]
 
+# normalize labels between -1 and 1
+data['stress_delta_scaled'] = data['stress_delta'] / 100.0
+
 # Perform train-test split
-train_files, test_files, train_targets, test_targets = train_test_split(audio_files, data["stress_delta"], test_size=0.2, random_state=42)
+train_files, test_files, train_targets, test_targets = train_test_split(audio_files, data["stress_delta_scaled"], test_size=0.2, random_state=42)
 
 train_targets = train_targets.reset_index(drop=True)
 test_targets = test_targets.reset_index(drop=True)
@@ -267,19 +270,21 @@ test_dataset = AudioDataset(list(test_files), window_size, stride, test_targets)
 
 # ### Training - basic without n-fold cross validation
 
-# In[ ]:
+# In[31]:
 
 
 print("Training with", len(audio_files), "files")
 print("window_size:", window_size, "; stride:", stride)
 print("batch_size:", batch_size, "; learning_rate:", learning_rate)
+print("scaled to [-1,1], self-assessed stress (delta)")
 #print(n_folds, "-fold cross validation")
 
-print("Using MSE Loss, shuffle=true, normal learning rate")
+print("Using MSE Loss, shuffle=true")
 
 # Training loop
 train_losses = []
 test_losses = []
+baseline_losses = []
 
 for epoch in range(num_epochs):
     model = model.to(device)
@@ -287,6 +292,7 @@ for epoch in range(num_epochs):
     train_loss = 0.0
     train_mae = 0.0
     train_rmse = 0.0
+    mean_target = 0.0
 
     # DataLoader uses len function to get indices of sliding windows and then calls them (get_item)
     # shuffle=False, as data points depend on each other
@@ -308,6 +314,7 @@ for epoch in range(num_epochs):
 
         train_mae += calculate_mae(stress_pred, target)
         train_rmse += calculate_rmse(stress_pred, target)
+        mean_target += torch.sum(target).item()
 
         # Backward pass and optimization
         loss.backward()
@@ -319,13 +326,14 @@ for epoch in range(num_epochs):
 
     train_mae /= len(train_loader.dataset)
     train_rmse /= len(train_loader.dataset)
+    mean_target /= len(train_loader.dataset)
 
     # Evaluation on test set
     model.eval()
     test_loss = 0.0
     test_mae = 0.0
     test_rmse = 0.0
-    mean_target = 0.0
+    baseline_loss = 0.0
 
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
 
@@ -337,21 +345,35 @@ for epoch in range(num_epochs):
             # Forward pass
             hidden_states, stress_pred = model(batch)
 
-            # Compute loss
+            # Compute test loss
             loss = criterion(stress_pred, target)
             test_loss += loss.item() * batch.size(0)
 
+            if epoch == 9:
+                print("stress_pred", stress_pred)
+                print("target", target)
+                print("mean_target", mean_target)
+
+            # compute baseline loss
+            mean_pred = torch.full_like(target, mean_target) # make mean_target into size of target batch
+            loss = criterion(mean_pred, target)
+            baseline_loss += loss.item() * batch.size(0)
+
             test_mae += calculate_mae(stress_pred, target)
             test_rmse += calculate_rmse(stress_pred, target)
-            mean_target += torch.sum(target).item()
 
     # Compute average test loss for the epoch
+    if epoch == 9:
+        print("test_loss:", test_loss, "; len test_loader.dataset:", len(test_loader.dataset))
     test_loss /= len(test_loader.dataset)
     test_losses.append(test_loss)
 
+    baseline_loss /= len(test_loader.dataset)
+    baseline_losses.append(baseline_loss)
+
     test_mae /= len(test_loader.dataset)
     test_rmse /= len(test_loader.dataset)
-    mean_target /= len(test_loader.dataset)
+
 
     # Print progress
     print(f"Epoch {epoch+1}/{num_epochs}: Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
@@ -360,14 +382,47 @@ for epoch in range(num_epochs):
 # Plot loss over epochs
 plt.plot(range(1, num_epochs+1), train_losses, label='Train Loss')
 plt.plot(range(1, num_epochs+1), test_losses, label='Test Loss')
-plt.axhline(mean_target, label='Mean Test Prediction')
+plt.plot(range(1, num_epochs+1), baseline_losses, label='Mean Baseline')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.legend()
-plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot_mse_lowlr.png')
+plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot_mse_baseline.png')
 plt.show()
 
 # Save trained model
-torch.save(model.state_dict(), '/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/model_mse_lowlr.pt')
+torch.save(model.state_dict(), '/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/model_mse_baseline.pt')
 torch.cuda.empty_cache()
+
+
+# In[3]:
+
+
+import torch
+print("bla")
+# Your original tensor
+original_tensor = torch.randn(3, 4)  # Example shape: 3 rows, 4 columns
+
+# The value you want to fill the new tensor with
+value = 5.0
+
+# Create a new tensor with the same size as the original tensor, filled with the specified value
+new_tensor = torch.full_like(original_tensor, value)
+
+print("Original Tensor:")
+print(original_tensor)
+
+print("\nNew Tensor:")
+print(new_tensor)
+
+
+# In[5]:
+
+
+
+
+
+# In[ ]:
+
+
+
 
