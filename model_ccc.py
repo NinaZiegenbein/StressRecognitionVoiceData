@@ -345,7 +345,7 @@ for epoch in range(num_epochs):
 
             # Compute loss
             #loss = criterion(stress_pred, target)
-            loss = calculate_ccc(stress_pred, target)
+            loss = calculate_ccc(stress_pred.flatten(), target)
             test_loss += loss * batch.size(0)
 
             test_mae += calculate_mae(stress_pred, target)
@@ -383,6 +383,37 @@ torch.cuda.empty_cache()
 
 
 
+
+
+# In[13]:
+
+
+import numpy as np
+
+def concordance_correlation_coefficient(y_true, y_pred):
+    mean_true = np.mean(y_true)
+    mean_pred = np.mean(y_pred)
+
+    numerator = np.sum((y_true - mean_true) * (y_pred - mean_pred))
+    denominator_true = np.sum((y_true - mean_true) ** 2)
+    denominator_pred = np.sum((y_pred - mean_pred) ** 2)
+    print(numerator)
+    # denominator_pred, denominator_true)
+
+    denominator = np.sqrt(denominator_true * denominator_pred)
+    #print(denominator)
+
+    ccc = 2.0 * numerator / (denominator_true + denominator_pred + (mean_true - mean_pred) ** 2)
+
+    return ccc
+
+# Example usage
+y_true = np.array([[0.0397],[0.0359],[0.0427],[0.0339],[0.0354],[0.0395]]).flatten()
+y_pred = np.array([14., 11., 13., 11., 14., 13.])
+
+print(y_true, y_pred)
+ccc_value = concordance_correlation_coefficient(y_true, y_pred)
+print("Concordance Correlation Coefficient:", ccc_value)
 
 
 # In[ ]:
