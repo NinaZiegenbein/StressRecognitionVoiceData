@@ -1,13 +1,9 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[18]:
+# In[1]:
 
 
-import os
-import audeer
-import audonnx
-import audinterface
 import numpy as np
 import pandas as pd
 import torch
@@ -24,12 +20,15 @@ from moviepy.editor import AudioFileClip
 import wave
 from sklearn.model_selection import StratifiedKFold
 import math
-import gc
+import glob
+import re
+from pydub import AudioSegment
+import os
 
 
 # # Stress Model
 
-# In[19]:
+# In[2]:
 
 
 class RegressionHead(nn.Module):
@@ -62,7 +61,7 @@ class RegressionHead(nn.Module):
         return x
 
 
-# In[21]:
+# In[3]:
 
 
 class StressModel(Wav2Vec2PreTrainedModel):
@@ -93,17 +92,23 @@ class StressModel(Wav2Vec2PreTrainedModel):
 
 # ### Load Pre-trained model
 
-# In[22]:
+# In[4]:
 
 
 # load model from hub
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model_name = 'audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'
 processor = Wav2Vec2Processor.from_pretrained(model_name)
+
+
+# In[5]:
+
+
 model = StressModel.from_pretrained(model_name)
+model = nn.DataParallel(model)
 
 
-# In[23]:
+# In[6]:
 
 
 # Freeze CNN layers, but not TransformerLayers
@@ -114,7 +119,7 @@ for name, param in model.named_parameters():
         param.requires_grad = False
 
 
-# In[24]:
+# In[7]:
 
 
 # additional loss infos/functions
@@ -134,7 +139,7 @@ def calculate_ccc(predictions, targets):
     return 1. - ccc
 
 
-# In[25]:
+# In[8]:
 
 
 # Create a new optimizer for the trainable layers (only transformer layers)
@@ -149,7 +154,7 @@ criterion = nn.MSELoss()
 
 # ### Load Data
 
-# In[26]:
+# In[9]:
 
 
 # Set hyperparameters
@@ -159,9 +164,11 @@ batch_size = 16
 num_epochs = 10
 learning_rate = 1e-4
 n_folds = 3
+muse = True # True for using Muse Dataset, false for tsst v dst dataset
+use_valence = True
 
 
-# In[27]:
+# In[10]:
 
 
 def num_windows(duration):
@@ -173,7 +180,7 @@ def num_windows(duration):
     return math.ceil((duration-window_size)/stride)+1
 
 
-# In[28]:
+# In[11]:
 
 
 # Define your custom dataset
@@ -231,7 +238,94 @@ class AudioDataset(Dataset):
         return window, target
 
 
-# In[29]:
+# In[12]:
+
+
+def convert_to_pcm(input_file, output_file):
+    audio = AudioSegment.from_wav(input_file)
+    audio.export(output_file, format="wav", parameters=["-ac", "1", "-ar", "44100"])
+
+
+# In[13]:
+
+
+# Datset for Muse Challenge
+class MuseDataset(Dataset):
+    def __init__(self, muse_dict, window_size, stride):
+        self.audio_files = list(muse_dict.keys())
+        self.window_size = window_size
+        self.stride = stride
+        self.targets = muse_dict
+
+    def __len__(self):
+        # get duration of ALL FILES divided without rest by stride and summed together
+        # returns the number of windows
+        return sum(num_windows(AudioFileClip(audio_file).duration)
+                   for audio_file in self.audio_files)
+
+    def __getitem__(self, idx):
+        # first we need to find the corresponding audio file
+        cumulative_windows = 0
+        audio_file_idx = 0
+
+        while cumulative_windows <= idx:
+            cumulative_windows += num_windows(AudioFileClip(self.audio_files[audio_file_idx]).duration)
+            audio_file_idx += 1
+
+        audio_file_idx -= 1  # since while is false, subtract the last plus
+
+        audio_file = self.audio_files[audio_file_idx]
+        file_name = os.path.basename(audio_file)
+        output_file = "/data/tsst_22_muse_video_nt_lab/processed/wav_converted/" + file_name
+        convert_to_pcm(audio_file, output_file)
+        audio = wave.open(output_file)
+        frame_rate = audio.getframerate()
+
+        # get number of windows in previous files
+        windows_in_prev_files = sum(num_windows(AudioFileClip(audio_file).duration) for audio_file in self.audio_files[0:audio_file_idx])
+        # get number of windows before idx in current file
+        windows_in_file = (idx - windows_in_prev_files)
+        start = windows_in_file * stride # multiply with stride to get starting point in seconds
+        audio.setpos(start)
+        # check if window is bigger than amount of audio file "left"
+        if start + int(self.window_size * frame_rate) <= audio.getnframes():
+            window = audio.readframes(int(self.window_size * frame_rate))
+        else:
+            # pad the audio file with zeros
+            num_frames_left = audio.getnframes() - start
+            zero_padding = b'\x00' * (int(self.window_size * frame_rate) - num_frames_left)
+            window = audio.readframes(num_frames_left) + zero_padding
+        audio.close()
+
+        # Convert the raw audio frames to a numeric representation
+        samples = np.frombuffer(window, dtype=np.int16)
+
+        # Convert samples to a tensor
+        window = torch.tensor(samples)
+
+        # calculate the target values:
+        valence, arousal = self.targets[audio_file]
+        start_ms = start * 1000 # get start in milliseconds
+        end_ms = start_ms + self.window_size * 1000
+
+        if use_valence:
+            stress_values = valence
+        else:
+            stress_values = arousal
+
+        # Round start and end values to closest timestamp
+        rounded_start = stress_values['timestamp'].iloc[(stress_values['timestamp'] - start_ms).abs().idxmin()]
+        rounded_end = stress_values['timestamp'].iloc[(stress_values['timestamp'] - end_ms).abs().idxmin()]
+
+        # Filter DataFrame to include rows between rounded start and end values
+        filtered_df = stress_values[(stress_values['timestamp'] >= rounded_start) & (stress_values['timestamp'] <= rounded_end)]
+
+        # Calculate the average of the values within the filtered DataFrame
+        target = filtered_df['value'].mean()
+        return window, target
+
+
+# In[14]:
 
 
 def custom_collate_fn(batch):
@@ -247,44 +341,82 @@ def custom_collate_fn(batch):
     return windows, targets
 
 
-# In[30]:
+# In[15]:
 
 
-# Load your list of audio file paths
-data = pd.read_csv("/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/tsst_data.csv")
-audio_files = data["TSST_audio_segment"]
+# Muse22 data
+if muse:
+    audio_files_muse = glob.glob("/data/tsst_22_muse_video_nt_lab/raw/c3_muse_stress_2022/raw_data/audio/*.wav")
+    valence_files_muse = glob.glob("/data/tsst_22_muse_video_nt_lab/raw/c3_muse_stress_2022/label_segments/valence/*.csv")
+    arousal_files_muse = glob.glob("/data/tsst_22_muse_video_nt_lab/raw/c3_muse_stress_2022/label_segments/physio-arousal/*.csv")
+    # create dataframe of valence and arousal csvs and fill them into a dictionary, where the key is the audio file name
+    muse_dict = {}
+    for v_file, a_file in zip(valence_files_muse,arousal_files_muse):
+        v_df = pd.read_csv(v_file)
+        a_df = pd.read_csv(a_file)
+        # drop speaker_id
+        v_df = v_df.drop(columns=['subject_id'])
+        a_df = a_df.drop(columns=['subject_id'])
+        # Check for NaN values in the "value" column
+        if v_df['value'].isna().any() or a_df['value'].isna().any():
+            continue
+        i = re.search(r'(\d+)\.csv', v_file)[1]
+        audio_name = i + ".wav"
+        audio_path = [path for path in audio_files_muse if audio_name in path][0]
+        muse_dict[audio_path] = (v_df, a_df)
 
-# normalize labels between -1 and 1
-data['stress_delta_scaled'] = data['stress_delta'] / 100.0
+    # perform train-test split
+    train_files, test_files = train_test_split(list(muse_dict.keys()), test_size=0.2, random_state=42)
+    print("Using MUSE files")
+    train_dict = {key: muse_dict[key] for key in train_files}
+    test_dict = {key: muse_dict[key] for key in test_files}
 
-# Perform train-test split
-train_files, test_files, train_targets, test_targets = train_test_split(audio_files, data["stress_delta_scaled"], test_size=0.2, random_state=42)
+    # create train and test datasets
+    train_dataset = MuseDataset(train_dict, window_size, stride)
+    test_dataset = MuseDataset(test_dict, window_size, stride)
 
-train_targets = train_targets.reset_index(drop=True)
-test_targets = test_targets.reset_index(drop=True)
+# tsst data
+else:
+    # Load your list of audio file paths
+    data = pd.read_csv("/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/tsst_data.csv")
+    audio_files = data["TSST_audio_segment"]
 
-# Create train and test datasets
-train_dataset = AudioDataset(list(train_files), window_size, stride, train_targets)
-test_dataset = AudioDataset(list(test_files), window_size, stride, test_targets)
+    # normalize labels between -1 and 1
+    data['stress_delta_scaled'] = data['stress_delta'] / 100.0
+
+    # Perform train-test split
+    train_files, test_files, train_targets, test_targets = train_test_split(audio_files, data["stress_delta_scaled"], test_size=0.2, random_state=19)
+
+    train_targets = train_targets.reset_index(drop=True)
+    test_targets = test_targets.reset_index(drop=True)
+    # Create train and test datasets
+    train_dataset = AudioDataset(list(train_files), window_size, stride, train_targets)
+    test_dataset = AudioDataset(list(test_files), window_size, stride, test_targets)
 
 
 # ### Training - basic without n-fold cross validation
 
-# In[31]:
+# In[16]:
 
 
-print("Training with", len(audio_files), "files")
+print("Training with", len(train_files) + len(test_files), "files")
 print("window_size:", window_size, "; stride:", stride)
 print("batch_size:", batch_size, "; learning_rate:", learning_rate)
 print("scaled to [-1,1], self-assessed stress (delta)")
 #print(n_folds, "-fold cross validation")
-
+if muse:
+    print("Using MUSE data")
+else:
+    print("Using TSST v DST Data")
 print("Using MSE Loss, shuffle=true")
 
 # Training loop
 train_losses = []
 test_losses = []
 baseline_losses = []
+
+debug_loss_train = []
+debug_loss_test = []
 
 for epoch in range(num_epochs):
     model = model.to(device)
@@ -310,6 +442,8 @@ for epoch in range(num_epochs):
 
         # Compute loss
         loss = criterion(stress_pred, target)
+        print("loss", loss, loss.item())
+        debug_loss_train.append(loss.item())
         train_loss += loss.item() * batch.size(0)
 
         train_mae += calculate_mae(stress_pred, target)
@@ -348,6 +482,7 @@ for epoch in range(num_epochs):
             # Compute test loss
             loss = criterion(stress_pred, target)
             test_loss += loss.item() * batch.size(0)
+            debug_loss_test.append(loss.item())
 
             if epoch == 9:
                 print("stress_pred", stress_pred)
@@ -379,6 +514,10 @@ for epoch in range(num_epochs):
     print(f"Epoch {epoch+1}/{num_epochs}: Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
     print(f"Train MAE: {train_mae:.4f}, Train RMSE: {train_rmse:.4f}, Test MAE: {test_mae:.4f}, Test RMSE: {test_rmse:.4f}")
 
+    print("debug losses train:", debug_loss_train)
+    print("debug losses test", debug_loss_test)
+
+
 # Plot loss over epochs
 plt.plot(range(1, num_epochs+1), train_losses, label='Train Loss')
 plt.plot(range(1, num_epochs+1), test_losses, label='Test Loss')
@@ -389,33 +528,23 @@ plt.legend()
 plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot_mse_baseline.png')
 plt.show()
 
+# Debug plot over all batches from all epochs
+plt.plot(range(len(debug_loss_train)), debug_loss_train, label='Train Loss')
+plt.plot(range(len(debug_loss_test)), debug_loss_test, label='Test Loss')
+plt.plot(range(1, num_epochs+1), baseline_losses, label='Mean Baseline')
+plt.xlabel('Batches (over all epochs)')
+plt.title("Debug: unnormalized loss per batch (Muse)")
+plt.ylabel('Loss')
+plt.legend()
+plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot_debug.png')
+plt.show()
+
 # Save trained model
 torch.save(model.state_dict(), '/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/model_mse_baseline.pt')
 torch.cuda.empty_cache()
 
 
-# In[3]:
-
-
-import torch
-print("bla")
-# Your original tensor
-original_tensor = torch.randn(3, 4)  # Example shape: 3 rows, 4 columns
-
-# The value you want to fill the new tensor with
-value = 5.0
-
-# Create a new tensor with the same size as the original tensor, filled with the specified value
-new_tensor = torch.full_like(original_tensor, value)
-
-print("Original Tensor:")
-print(original_tensor)
-
-print("\nNew Tensor:")
-print(new_tensor)
-
-
-# In[5]:
+# In[ ]:
 
 
 
