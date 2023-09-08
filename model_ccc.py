@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+# This file uses the concordance correlation coefficient loss function instead of MSE. Otherwise this file is the same as the model_mse file.
+
 # In[ ]:
 
 
@@ -120,7 +122,6 @@ for name, param in model.named_parameters():
 # additional loss infos/functions
 def calculate_mae(predictions, targets):
     loss_func = nn.L1Loss()
-    print("I am calculated")
     return loss_func(predictions, targets).item() * batch.size(0)
 
 def calculate_rmse(predictions, targets):
@@ -340,9 +341,6 @@ for epoch in range(num_epochs):
             # Forward pass
             hidden_states, stress_pred = model(batch)
 
-            print("stress_pred", stress_pred)
-            print("target", target)
-
             # Compute loss
             #loss = criterion(stress_pred, target)
             loss = calculate_ccc(stress_pred.flatten(), target)
@@ -385,7 +383,7 @@ torch.cuda.empty_cache()
 
 
 
-# In[13]:
+# In[ ]:
 
 
 import numpy as np

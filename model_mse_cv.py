@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# This file uses MSE loss and uses parser arguments (compared to model_ccc).
+# This file implements Cross Validation or Leave-one-participant-out validation and uses MSE loss. Parser Arguments are also implemented.
 
 # In[ ]:
 
@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset
 from moviepy.editor import AudioFileClip
 import wave
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import KFold, LeaveOneOut
 import math
 import glob
 import re
@@ -95,7 +95,7 @@ class StressModel(Wav2Vec2PreTrainedModel):
         return hidden_states, stress_pred
 
 
-# ### Load Pre-trained model
+# ## Load Pre-trained model
 
 # In[ ]:
 
@@ -121,9 +121,6 @@ for name, param in model.named_parameters():
     if "wav2vec2.feature_extractor" in name:
         param.requires_grad = False
     if "wav2vec2.masked_spec_embed" in name:
-        param.requires_grad = False
-    # comment the following out if transformer should be retrained
-    if "wave2vec2.encoder" in name:
         param.requires_grad = False
 
 
@@ -166,15 +163,15 @@ criterion = nn.MSELoss()
 
 
 # Set hyperparameters
-window_size = 6  # seconds
+window_size = 8  # seconds
+stride = int(window_size / 2)
 batch_size = 16
 num_epochs = 10
 learning_rate = 1e-4
-n_folds = 3
+n_folds = 5
 muse = False # True for using Muse Dataset, false for tsst v dst dataset
 panel = True
 use_valence = True
-stride = int(window_size / 2)
 
 
 # In[ ]:
@@ -414,36 +411,7 @@ def custom_collate_fn(batch):
 
 # Muse22 data
 if muse:
-    audio_files_muse = glob.glob("/data/tsst_22_muse_video_nt_lab/raw/c3_muse_stress_2022/raw_data/audio/*.wav")
-    valence_files_muse = glob.glob("/data/tsst_22_muse_video_nt_lab/raw/c3_muse_stress_2022/label_segments/valence/*.csv")
-    arousal_files_muse = glob.glob("/data/tsst_22_muse_video_nt_lab/raw/c3_muse_stress_2022/label_segments/physio-arousal/*.csv")
-    # create dataframe of valence and arousal csvs and fill them into a dictionary, where the key is the audio file name
-    muse_dict = {}
-    for v_file, a_file in zip(valence_files_muse,arousal_files_muse):
-        v_df = pd.read_csv(v_file)
-        a_df = pd.read_csv(a_file)
-        # drop speaker_id
-        v_df = v_df.drop(columns=['subject_id'])
-        a_df = a_df.drop(columns=['subject_id'])
-        # Check for NaN values in the "value" column
-        if v_df['value'].isna().any() or a_df['value'].isna().any():
-            continue
-        i = re.search(r'(\d+)\.csv', v_file)[1]
-        audio_name = i + ".wav"
-        audio_path = [path for path in audio_files_muse if audio_name in path][0]
-        muse_dict[audio_path] = (v_df, a_df)
-
-    # perform train-test split
-    train_files, test_files = train_test_split(list(muse_dict.keys()), test_size=0.2, random_state=23)
-    print("Using MUSE files")
-    train_dict = {key: muse_dict[key] for key in train_files}
-    test_dict = {key: muse_dict[key] for key in test_files}
-
-    print(train_dict.keys())
-
-    # create train and test datasets
-    train_dataset = MuseDataset(train_dict, window_size, stride)
-    test_dataset = MuseDataset(test_dict, window_size, stride)
+    print("The complete muse dataset is to big to use cross-validation. Either reduce amount of data or prepare for long runtimes (~30h per fold)")
 
 # tsst data with panel assessed stress
 elif panel:
@@ -455,12 +423,13 @@ elif panel:
     data['panel_stress_speech_average'] = data['panel_stress_speech_average'] / 100.0
 
     # Perform train-test split
-    train_files, test_files, train_targets, test_targets = train_test_split(audio_files, data["panel_stress_speech_average"], test_size=0.2, random_state=19)
+    train_files, test_files, train_targets, test_targets = train_test_split(audio_files, data["panel_stress_speech_average"], test_size=0.1, random_state=19)
+    print("test files", list(test_files))
 
     train_targets = train_targets.reset_index(drop=True)
     test_targets = test_targets.reset_index(drop=True)
-    # Create train and test datasets
-    train_dataset = AudioDataset(list(train_files), window_size, stride, train_targets)
+
+    # Create test datasets
     test_dataset = AudioDataset(list(test_files), window_size, stride, test_targets)
 
 # tsst data with self-assessed stress
@@ -472,17 +441,18 @@ else:
     # normalize labels between -1 and 1
     data['stress_delta_scaled'] = data['stress_delta'] / 100.0
 
-    # Perform train-test split
-    train_files, test_files, train_targets, test_targets = train_test_split(audio_files, data["stress_delta_scaled"], test_size=0.2, random_state=19)
+    # Perform train-test split -> smaller test size, since cross validation
+    train_files, test_files, train_targets, test_targets = train_test_split(audio_files, data["stress_delta_scaled"], test_size=0.1, random_state=19)
+    print("test files", test_files)
 
     train_targets = train_targets.reset_index(drop=True)
     test_targets = test_targets.reset_index(drop=True)
-    # Create train and test datasets
-    train_dataset = AudioDataset(list(train_files), window_size, stride, train_targets)
+
+    # Create test datasets
     test_dataset = AudioDataset(list(test_files), window_size, stride, test_targets)
 
 
-# ### Training - basic without n-fold cross validation
+# ### Training - with n-fold cross validation
 
 # In[ ]:
 
@@ -490,7 +460,6 @@ else:
 print("Training with", len(train_files) + len(test_files), "files")
 print("window_size:", window_size, "; stride:", stride)
 print("batch_size:", batch_size, "; learning_rate:", learning_rate)
-print("scaled to [-1,1], self-assessed stress (delta)")
 #print(n_folds, "-fold cross validation")
 if muse:
     print("Using MUSE data")
@@ -498,152 +467,201 @@ elif panel:
     print("Using TSST v DST Data with panel-assessed stress")
 else:
     print("Using TSST v DST Data with self-assessed stress")
+print("Using" + str(n_folds) +"-fold Cross-vaildation")
 
 # Training loop
-train_losses = []
-test_losses = []
-baseline_losses = []
+best_test_loss = float('inf')
+best_model = None
 
-debug_loss_train = []
-debug_loss_test = []
+# Create the cross-validation/leave-one-out splits
+# kf = KFold(n_splits=n_folds, shuffle=True, random_state=19)
+kf = LeaveOneOut()
+for fold, (train_index, valid_index) in enumerate(kf.split(train_files, train_targets)):
+    print(fold, valid_index)
+    print(list(torch.utils.data.Subset(list(train_files), valid_index)))
+test_losses_complete = []
+# Iterate over the folds
+for fold, (train_index, valid_index) in enumerate(kf.split(train_files, train_targets)):
+    train_losses = []
+    valid_losses = []
+    baseline_losses = []
+    test_losses = []
+    # Create the train and test datasets for the current fold
+    train_fold_files = torch.utils.data.Subset(list(train_files), train_index)
+    train_fold_targets = torch.utils.data.Subset(list(train_targets), train_index)
+    valid_fold_files = torch.utils.data.Subset(list(train_files), valid_index)
+    valid_fold_targets = torch.utils.data.Subset(list(train_targets), valid_index)
 
-for epoch in range(num_epochs):
+    #train_fold_targets = train_fold_targets.reset_index(drop=True)
+    #valid_fold_targets = valid_fold_targets.reset_index(drop=True)
+
+    train_dataset = AudioDataset(list(train_fold_files), window_size, stride, train_fold_targets)
+    valid_dataset = AudioDataset(list(valid_fold_files), window_size, stride, valid_fold_targets)
+
+    # Initialize the model for each fold
+    model = StressModel.from_pretrained(model_name)
+    model = nn.DataParallel(model)
     model = model.to(device)
-    model.train()
-    train_loss = 0.0
-    train_mae = 0.0
-    train_rmse = 0.0
-    mean_target = 0.0
 
-    # DataLoader uses len function to get indices of sliding windows and then calls them (get_item)
-    # shuffle=False, as data points depend on each other
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
+    # Initialize the optimizer and criterion
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    criterion = nn.MSELoss()
 
-    # Iterate over training batches
-    for batch, target in train_loader:
-        batch = batch.to(device)
-        target = target.to(device)
-        optimizer.zero_grad()
+    # Iterate over epochs
+    for epoch in range(num_epochs):
+        print("start epoch", epoch)
+        model.train()
+        train_loss = 0.0
+        mean_target = 0.0
+        mean_stress_pred = 0.0
 
-        # Forward pass
-        #outputs = model(batch)
-        hidden_states, stress_pred = model(batch.to(device))
+        # Create the train data loaders
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
 
-        # Compute loss
-        loss = criterion(stress_pred, target)
-        print("loss", loss, loss.item())
-        debug_loss_train.append(loss.item())
-        train_loss += loss.item() * batch.size(0)
-
-        train_mae += calculate_mae(stress_pred, target)
-        train_rmse += calculate_rmse(stress_pred, target)
-        mean_target += torch.sum(target).item()
-
-        # Backward pass and optimization
-        loss.backward()
-        optimizer.step()
-
-    # Compute average train loss for the epoch
-    train_loss /= len(train_loader.dataset)
-    train_losses.append(train_loss)
-
-    train_mae /= len(train_loader.dataset)
-    train_rmse /= len(train_loader.dataset)
-    mean_target /= len(train_loader.dataset)
-
-    # Evaluation on test set
-    model.eval()
-    test_loss = 0.0
-    test_mae = 0.0
-    test_rmse = 0.0
-    baseline_loss = 0.0
-
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
-
-    with torch.no_grad():
-        for batch, target in test_loader:
+        # Iterate over training batches
+        for batch, target in train_loader:
             batch = batch.to(device)
             target = target.to(device)
+            optimizer.zero_grad()
 
             # Forward pass
-            hidden_states, stress_pred = model(batch)
+            hidden_states, stress_pred = model(batch.to(device))
 
-            # Compute test loss
+            # Compute loss
             loss = criterion(stress_pred, target)
-            test_loss += loss.item() * batch.size(0)
-            debug_loss_test.append(loss.item())
+            print("loss", loss, loss.item())
+            print("pred:", stress_pred)
+            print("target:", target)
+            train_loss += loss.item() * batch.size(0)
+            mean_target += torch.sum(target).item()
+            mean_stress_pred += torch.sum(stress_pred).item()
 
-            if epoch == 9:
-                print("stress_pred", stress_pred)
-                print("target", target)
-                print("mean_target", mean_target)
+            # Backward pass and optimization
+            loss.backward()
+            optimizer.step()
 
-            # compute baseline loss
-            mean_pred = torch.full_like(target, mean_target) # make mean_target into size of target batch
-            loss = criterion(mean_pred, target)
-            baseline_loss += loss.item() * batch.size(0)
+        # Compute average train loss for the epoch
+        train_loss /= len(train_loader.dataset)
+        train_losses.append(train_loss)
 
-            test_mae += calculate_mae(stress_pred, target)
-            test_rmse += calculate_rmse(stress_pred, target)
+        mean_stress_pred /= len(train_loader.dataset)
+        print("mean stress prediction:", mean_stress_pred)
 
-    # Compute average test loss for the epoch
-    if epoch == 9:
-        print("test_loss:", test_loss, "; len test_loader.dataset:", len(test_loader.dataset))
-    test_loss /= len(test_loader.dataset)
-    test_losses.append(test_loss)
+        # Evaluation on validation set
+        model.eval()
+        valid_loss = 0.0
+        baseline_loss = 0.0
 
-    baseline_loss /= len(test_loader.dataset)
-    baseline_losses.append(baseline_loss)
+        valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
 
-    test_mae /= len(test_loader.dataset)
-    test_rmse /= len(test_loader.dataset)
+        print("validation")
+        with torch.no_grad():
+            for batch, target in valid_loader:
+                batch = batch.to(device)
+                target = target.to(device)
+
+                # Forward pass
+                hidden_states, stress_pred = model(batch)
+                print("pred:", stress_pred)
+                print("target:", target)
+
+                # Compute loss
+                loss = criterion(stress_pred, target)  # Adjust targets according to your data
+                valid_loss += loss.item() * batch.size(0)
+
+                # compute baseline loss
+                mean_pred = torch.full_like(target, mean_target) # make mean_target into size of target batch
+                loss = criterion(mean_pred, target)
+                baseline_loss += loss.item() * batch.size(0)
+
+        # Compute average validation loss for the epoch
+        valid_loss /= len(valid_loader.dataset)
+        valid_losses.append(valid_loss)
+
+        baseline_loss /= len(valid_loader.dataset)
+        baseline_losses.append(baseline_loss)
+
+        # Evaluation on test set
+        model.eval()
+        test_loss = 0.0
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
+
+        with torch.no_grad():
+            for batch, target in test_loader:
+                batch = batch.to(device)
+                target = target.to(device)
+
+                # Forward pass
+                hidden_states, stress_pred = model(batch)
+
+                # Compute loss
+                loss = criterion(stress_pred, target)
+                test_loss += loss.item() * batch.size(0)
+
+        # Compute average test loss for the entire test dataset
+        test_loss /= len(test_loader.dataset)
+        test_losses.append(test_loss)
+
+        # Print progress
+        print(f"Fold {fold+1}/{n_folds}, Epoch {epoch+1}/{num_epochs}: Train Loss: {train_loss:.4f}, Validation Loss: {valid_loss:.4f}, Test Loss: {test_loss: .4f}, Baseline Loss: {baseline_loss: .4f}")
+
+    test_losses_complete.append(test_losses)
+    # Save trained model
+    torch.save(model.state_dict(), '/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/best_trained_model_cv_fold' + str(fold)+ "_" + str(datetime.date.today()) + '.pt')
+
+    # Plot loss over epochs
+    try:
+        plt.plot(range(1, num_epochs+1), train_losses, label='Train Loss')
+        plt.plot(range(1, num_epochs+1), valid_losses, label='Validation Loss')
+        plt.plot(range(1, num_epochs+1), test_losses, label='Test Loss')
+        plt.plot(range(1, num_epochs+1), baseline_losses, label='Baseline Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title("Fold" + str(fold+1))
+        plt.legend()
+        plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot_fold_' + str(fold) + '_' + "panel=" + str(panel) + "_" + str(datetime.date.today()) + '.png')
+        plt.show()
+    except:
+        print("Error in plot")
+        print("train_losses:", train_losses)
+        print("validation losses:", valid_losses)
+        print("test losses", test_losses)
+        print("baseline losses", baseline_losses)
+
+try:
+    for fold in range(n_folds):
+        plt.plot(range(1, num_epochs+1), test_losses_complete[fold], label=str('Test Loss Fold'+str(fold+1)))
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title("Fold" + str(fold+1))
+    plt.legend()
+    plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot_fold_overview_' + "panel=" + str(panel) + "_" + str(datetime.date.today()) + '.png')
+    plt.show()
+except:
+    print("Error in creating plot!")
+    print("complete test losses: ", test_losses_complete)
 
 
-    # Print progress
-    print(f"Epoch {epoch+1}/{num_epochs}: Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
-    print(f"Train MAE: {train_mae:.4f}, Train RMSE: {train_rmse:.4f}, Test MAE: {test_mae:.4f}, Test RMSE: {test_rmse:.4f}")
 
-    print("debug losses train:", debug_loss_train)
-    print("debug losses test", debug_loss_test)
+# # Look at predictions of pretrained models
+
+# In[ ]:
 
 
-if muse:
-    data = "muse"
-elif panel:
-    data = "tsst_panel"
-else:
-    data = "tsst_self"
-
-# Plot loss over epochs
-plt.plot(range(1, num_epochs+1), train_losses, label='Train Loss')
-plt.plot(range(1, num_epochs+1), test_losses, label='Test Loss')
-plt.plot(range(1, num_epochs+1), baseline_losses, label='Mean Baseline')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.legend()
-plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot_'+ data + '_' + str(criterion) + '_' + str(datetime.date.today()) + '.png')
-plt.show()
-
-# Debug plot over all batches from all epochs
-plt.plot(range(len(debug_loss_train)), debug_loss_train, label='Train Loss')
-plt.plot(range(len(debug_loss_test)), debug_loss_test, label='Test Loss')
-plt.plot(range(1, num_epochs+1), baseline_losses, label='Mean Baseline')
-plt.xlabel('Batches (over all epochs)')
-plt.title("Debug: unnormalized loss per batch (Muse)")
-plt.ylabel('Loss')
-plt.legend()
-plt.savefig('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/loss_plot_debug_'+ data + '_' + str(criterion) + '_' + str(datetime.date.today()) +'.png')
-plt.show()
-
-# Save trained model
-torch.save(model.state_dict(), '/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/model' + data + '_' + str(criterion) + '_' + str(datetime.date.today()) + '.pt')
-torch.cuda.empty_cache()
+model_pt = torch.load('/data/dst_tsst_22_bi_multi_nt_lab/processed/audio_files/best_trained_model_cv_fold4_2023-09-06.pt')
+train_dataset = AudioDataset(list(train_files), window_size, stride, train_targets)
+input_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate_fn)
+for batch, target in input_loader:
+    predictions = model(batch)
+    print(predictions, target)
 
 
 # In[ ]:
 
 
-
+import gc
+gc.collect()
+torch.cuda.empty_cache()
 
 
 # # Dumpster
